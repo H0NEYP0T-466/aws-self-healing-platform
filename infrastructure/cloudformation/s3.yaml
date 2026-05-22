@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: S3 bucket for backups with lifecycle policies and versioning
+
+Parameters:
+  EnvironmentName:
+    Type: String
+
+Resources:
+  # ============================================================
+  # S3 Backup Bucket
+  # ============================================================
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${EnvironmentName}-blog-platform-backups-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+          - Id: TransitionToGlacier
+            Status: Enabled
+            Transitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+          - Id: DeleteOldBackups
+            Status: Enabled
+            ExpirationInDays: 365
+          - Id: DeleteIncompleteMultipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-blog-backups'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================
+  # Bucket Policy
+  # ============================================================
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BackupBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt BackupBucket.Arn
+              - !Sub '${BackupBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - Sid: AllowEC2BackupAccess
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: !Sub '${BackupBucket.Arn}/backups/*'
+
+Outputs:
+  BackupBucketName:
+    Description: S3 backup bucket name
+    Value: !Ref BackupBucket
+  BackupBucketArn:
+    Description: S3 backup bucket ARN
+    Value: !GetAtt BackupBucket.Arn

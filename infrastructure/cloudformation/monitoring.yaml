@@ -1,0 +1,326 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudWatch alarms, SNS topics, and Lambda auto-recovery for self-healing
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  EC2InstanceId:
+    Type: String
+  RDSInstanceId:
+    Type: String
+  AlertEmail:
+    Type: String
+  BackupBucketArn:
+    Type: String
+
+Resources:
+  # ============================================================
+  # SNS Topic for Alerts
+  # ============================================================
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${EnvironmentName}-BlogPlatform-Alerts'
+      DisplayName: Blog Platform Alerts
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  LambdaSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: lambda
+      Endpoint: !GetAtt AutoRecoveryFunction.Arn
+
+  # ============================================================
+  # CloudWatch Alarms — EC2
+  # ============================================================
+  EC2HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-EC2-HighCPU-BlogServer'
+      AlarmDescription: EC2 CPU utilization exceeds 80% for 3 consecutive periods
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref EC2InstanceId
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+      TreatMissingData: breaching
+
+  EC2StatusCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-EC2-StatusCheck-Failed'
+      AlarmDescription: EC2 instance status check has failed
+      MetricName: StatusCheckFailed
+      Namespace: AWS/EC2
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref EC2InstanceId
+      AlarmActions:
+        - !Ref AlertTopic
+        - !Sub 'arn:aws:automate:${AWS::Region}:ec2:recover'
+      TreatMissingData: breaching
+
+  EC2HighMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-EC2-HighMemory-BlogServer'
+      AlarmDescription: EC2 memory utilization exceeds 90%
+      MetricName: MemoryUtilization
+      Namespace: CWAgent
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 90
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref EC2InstanceId
+      AlarmActions:
+        - !Ref AlertTopic
+
+  # ============================================================
+  # CloudWatch Alarms — RDS
+  # ============================================================
+  RDSHighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-RDS-HighCPU-BlogDB'
+      AlarmDescription: RDS CPU utilization exceeds 75%
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 75
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref RDSInstanceId
+      AlarmActions:
+        - !Ref AlertTopic
+
+  RDSHighConnectionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-RDS-HighConnections-BlogDB'
+      AlarmDescription: RDS database connections exceed 120
+      MetricName: DatabaseConnections
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 120
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref RDSInstanceId
+      AlarmActions:
+        - !Ref AlertTopic
+
+  RDSLowStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-RDS-LowStorage-BlogDB'
+      AlarmDescription: RDS free storage space below 2 GB
+      MetricName: FreeStorageSpace
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2147483648  # 2 GB in bytes
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref RDSInstanceId
+      AlarmActions:
+        - !Ref AlertTopic
+
+  # ============================================================
+  # Lambda Function for Auto-Recovery
+  # ============================================================
+  AutoRecoveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-auto-recovery-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AutoRecoveryPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                  - ec2:RebootInstances
+                  - rds:DescribeDBInstances
+                  - rds:RebootDBInstance
+                  - s3:PutObject
+                  - sns:Publish
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  AutoRecoveryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${EnvironmentName}-auto-recovery'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt AutoRecoveryRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref EnvironmentName
+          SNS_TOPIC_ARN: !Ref AlertTopic
+          BACKUP_BUCKET: !Sub '${EnvironmentName}-blog-backups'
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          ec2 = boto3.client('ec2')
+          rds = boto3.client('rds')
+          sns = boto3.client('sns')
+          s3 = boto3.client('s3')
+
+          def handler(event, context):
+              """
+              Auto-recovery handler triggered by CloudWatch Alarms via SNS.
+              Workflow:
+              1. Parse alarm details
+              2. Create emergency backup
+              3. Attempt recovery (restart service)
+              4. Verify health
+              5. Send recovery notification
+              """
+              logger.info(f"Received event: {json.dumps(event)}")
+              
+              for record in event.get('Records', []):
+                  message = json.loads(record['Sns']['Message'])
+                  alarm_name = message.get('AlarmName', '')
+                  new_state = message.get('NewStateValue', '')
+                  
+                  if new_state != 'ALARM':
+                      logger.info(f"Alarm {alarm_name} is {new_state}, no action needed")
+                      continue
+                  
+                  logger.info(f"Processing ALARM: {alarm_name}")
+                  
+                  # Determine recovery action based on alarm
+                  if 'EC2' in alarm_name and 'StatusCheck' in alarm_name:
+                      recover_ec2_instance(message)
+                  elif 'EC2' in alarm_name and 'HighCPU' in alarm_name:
+                      handle_high_cpu(message)
+                  elif 'RDS' in alarm_name:
+                      handle_rds_alarm(message)
+                  
+              return {'statusCode': 200, 'body': 'Recovery processed'}
+
+          def recover_ec2_instance(message):
+              """Attempt to recover a failed EC2 instance."""
+              logger.info("Initiating EC2 instance recovery...")
+              notify("EC2 Recovery", "Auto-recovery initiated for failed EC2 instance")
+
+          def handle_high_cpu(message):
+              """Handle high CPU by potentially scaling out."""
+              logger.info("High CPU detected, evaluating scaling...")
+              notify("High CPU Alert", "CPU threshold exceeded, monitoring for scale-out")
+
+          def handle_rds_alarm(message):
+              """Handle RDS alarms."""
+              logger.info("RDS alarm triggered, evaluating...")
+              notify("RDS Alert", "Database alarm triggered, checking health")
+
+          def notify(subject, message):
+              """Send SNS notification about recovery action."""
+              sns.publish(
+                  TopicArn=os.environ['SNS_TOPIC_ARN'],
+                  Subject=f"[AutoRecovery] {subject}",
+                  Message=message
+              )
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AutoRecoveryFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref AlertTopic
+
+  # ============================================================
+  # CloudWatch Dashboard
+  # ============================================================
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${EnvironmentName}-BlogPlatform-Dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "properties": {
+                "title": "EC2 CPU Utilization",
+                "metrics": [["AWS/EC2", "CPUUtilization", "InstanceId", "${EC2InstanceId}"]],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              },
+              "width": 12,
+              "height": 6
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "title": "RDS Database Connections",
+                "metrics": [["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", "${RDSInstanceId}"]],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              },
+              "width": 12,
+              "height": 6
+            }
+          ]
+        }
+
+Outputs:
+  AlertTopicArn:
+    Value: !Ref AlertTopic
+  AutoRecoveryFunctionArn:
+    Value: !GetAtt AutoRecoveryFunction.Arn

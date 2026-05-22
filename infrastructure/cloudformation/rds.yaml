@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: RDS MySQL instance with Multi-AZ, automated backups, and monitoring
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet::Id
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet::Id
+  DBMasterPassword:
+    Type: String
+    NoEcho: true
+
+Resources:
+  # ============================================================
+  # DB Subnet Group
+  # ============================================================
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnets for RDS
+      DBSubnetGroupName: !Sub '${EnvironmentName}-blog-db-subnet'
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-db-subnet-group'
+
+  # ============================================================
+  # RDS MySQL Instance
+  # ============================================================
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub '${EnvironmentName}-blog-db'
+      DBInstanceClass: db.t3.medium
+      Engine: mysql
+      EngineVersion: '8.0.35'
+      MasterUsername: admin
+      MasterUserPassword: !Ref DBMasterPassword
+      DBName: blogplatform
+      AllocatedStorage: 20
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: true
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !ImportValue
+          Fn::Sub: '${EnvironmentName}-db-sg'
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt RDSMonitoringRole.Arn
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      CopyTagsToSnapshot: true
+      DeletionProtection: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-blog-db'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================
+  # RDS Enhanced Monitoring IAM Role
+  # ============================================================
+  RDSMonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-rds-monitoring-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+
+Outputs:
+  DBInstanceId:
+    Description: RDS Instance Identifier
+    Value: !Ref DBInstance
+  DBEndpoint:
+    Description: RDS MySQL endpoint
+    Value: !GetAtt DBInstance.Endpoint.Address
+  DBPort:
+    Description: RDS MySQL port
+    Value: !GetAtt DBInstance.Endpoint.Port

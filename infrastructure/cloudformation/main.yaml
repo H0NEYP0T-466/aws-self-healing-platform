@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Self-Healing Multi-Tier Blogging Platform - Master Stack
+  Deploys a complete multi-tier architecture with auto-healing capabilities
+  using EC2, RDS, CloudWatch, S3, and SNS.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging, development]
+    Description: Environment name for resource tagging
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for SSH access
+
+  DBMasterPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Master password for RDS instance
+
+  AlertEmail:
+    Type: String
+    Description: Email address for SNS alert notifications
+
+Resources:
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./vpc.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+
+  EC2Stack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VPCStack
+    Properties:
+      TemplateURL: ./ec2.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PublicSubnet1: !GetAtt VPCStack.Outputs.PublicSubnet1
+        PublicSubnet2: !GetAtt VPCStack.Outputs.PublicSubnet2
+        KeyPairName: !Ref KeyPairName
+
+  RDSStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VPCStack
+    Properties:
+      TemplateURL: ./rds.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnet1: !GetAtt VPCStack.Outputs.PrivateSubnet1
+        PrivateSubnet2: !GetAtt VPCStack.Outputs.PrivateSubnet2
+        DBMasterPassword: !Ref DBMasterPassword
+
+  S3Stack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./s3.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+
+  MonitoringStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - EC2Stack
+      - RDSStack
+      - S3Stack
+    Properties:
+      TemplateURL: ./monitoring.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        EC2InstanceId: !GetAtt EC2Stack.Outputs.InstanceId
+        RDSInstanceId: !GetAtt RDSStack.Outputs.DBInstanceId
+        AlertEmail: !Ref AlertEmail
+        BackupBucketArn: !GetAtt S3Stack.Outputs.BackupBucketArn
+
+Outputs:
+  WebServerURL:
+    Description: URL of the blog platform
+    Value: !Sub
+      - 'http://${PublicIP}'
+      - PublicIP: !GetAtt EC2Stack.Outputs.PublicIP
+
+  DatabaseEndpoint:
+    Description: RDS MySQL endpoint
+    Value: !GetAtt RDSStack.Outputs.DBEndpoint
+
+  BackupBucket:
+    Description: S3 backup bucket name
+    Value: !GetAtt S3Stack.Outputs.BackupBucketName
+
+  MonitoringDashboard:
+    Description: CloudWatch dashboard URL
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:'

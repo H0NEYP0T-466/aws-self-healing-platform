@@ -9,6 +9,7 @@ lerna-debug.log*
 awsProofs/
 node_modules
 dist
+.claude
 dist-ssr
 *.local
 

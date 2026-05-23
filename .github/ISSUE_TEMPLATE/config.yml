@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 GitHub Discussions
+    url: https://github.com/H0NEYP0T-466/aws-self-healing-platform/discussions
+    about: Ask questions, share ideas, or start a discussion
+  - name: 🛡 Security Reporting
+    url: https://github.com/H0NEYP0T-466/aws-self-healing-platform/security/advisories/new
+    about: Report security vulnerabilities privately
+  - name: ❓ Q&A
+    url: https://github.com/H0NEYP0T-466/aws-self-healing-platform/discussions/categories/q-a
+    about: Ask questions about usage, setup, or deployment

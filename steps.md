@@ -99,7 +99,77 @@ We must allow our EC2 instance to talk to the RDS database.
 
 ---
 
-## 📈 Step 6: Configure CloudWatch Alarms & Monitoring
+## 🚀 Step 6: Deploy the Web Application Code to EC2
+Your EC2 UserData script automatically installs Nginx and Node.js. Nginx is configured to forward standard web traffic on **Port 80** to your app running on **Port 3000** (`proxy_pass http://localhost:3000`).
+
+To push your web application code onto the instance and start serving the dashboard, choose **one of the two options** below:
+
+### Option A: Clone & Run on Port 3000 via PM2 (Standard Application Server)
+This option keeps your app running on Port 3000 dynamically, aligning perfectly with Nginx's reverse proxy:
+
+1.  **SSH into your EC2 Instance** using your terminal:
+    ```bash
+    ssh -i "blog-key.pem" ec2-user@[YOUR-EC2-PUBLIC-IP]
+    ```
+2.  **Install Git on the instance**:
+    ```bash
+    sudo dnf install git -y   # Or sudo yum install git -y
+    ```
+3.  **Clone the code repository** to your server:
+    ```bash
+    git clone https://github.com/[YOUR-USERNAME]/[YOUR-REPOSITORY-NAME].git
+    cd [YOUR-REPOSITORY-NAME]
+    ```
+4.  **Install project dependencies**:
+    ```bash
+    npm install
+    ```
+5.  **Build the production frontend bundle**:
+    ```bash
+    npm run build
+    ```
+6.  **Run the App on Port 3000 in the background using PM2** (ensures it stays running continuously):
+    ```bash
+    sudo npm install -g pm2
+    # Start the Vite production server preview on port 3000, managed by PM2
+    pm2 start "npm run preview -- --port 3000 --host 0.0.0.0" --name "blog-app"
+    ```
+
+---
+
+### Option B: Local Build and Push via SCP (Direct Static Serving)
+If you only need to serve the built static dashboard React files, you can bypass running Node.js on port 3000 entirely and configure Nginx to serve your compiled files directly:
+
+1.  **Build your application locally** in your command line:
+    ```bash
+    npm run build
+    ```
+    *This generates a compiled `dist/` directory in your local folder.*
+2.  **Securely upload (SCP) the built folder** to your EC2 Instance:
+    ```bash
+    scp -i "blog-key.pem" -r dist/* ec2-user@[YOUR-EC2-PUBLIC-IP]:/home/ec2-user/blog-site
+    ```
+3.  **Configure Nginx to serve the site directly**:
+    SSH into the server and replace the proxy block in `/etc/nginx/conf.d/blog.conf` with direct static hosting:
+    ```nginx
+    server {
+        listen 80;
+        server_name _;
+        root /home/ec2-user/blog-site;
+        index index.html;
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+    ```
+4.  **Restart Nginx to apply changes**:
+    ```bash
+    sudo systemctl restart nginx
+    ```
+
+---
+
+## 📈 Step 7: Configure CloudWatch Alarms & Monitoring
 We will configure alarms to detect when our server crashes or database is overloaded.
 
 ### EC2 Status Check Alarm (Triggers on Crash)
@@ -122,7 +192,7 @@ We will configure alarms to detect when our server crashes or database is overlo
 
 ---
 
-## ⚡ Step 7: Create the Auto-Healing AWS Lambda Function (Custom Recovery)
+## ⚡ Step 8: Create the Auto-Healing AWS Lambda Function (Custom Recovery)
 For custom recovery workflows (like taking an emergency RDS database backup before restarting services), we use an AWS Lambda function triggered by our SNS topic.
 
 1.  Search for **Lambda** in the console.
@@ -161,7 +231,7 @@ For custom recovery workflows (like taking an emergency RDS database backup befo
 
 ---
 
-## 🧪 Step 8: Verify and Test the Self-Healing System
+## 🧪 Step 9: Verify and Test the Self-Healing System
 
 How do you know it works? We simulate a failure on the server!
 
